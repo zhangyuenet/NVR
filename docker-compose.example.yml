@@ -1,0 +1,86 @@
+# 复制为 docker-compose.yml 使用。所有密钥都从同目录的 .env 读取。
+services:
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:stable
+    container_name: frigate
+    restart: unless-stopped
+    shm_size: "512mb"
+    ports:
+      # 只监听本机：外部统一经 Tailscale Serve 访问（见文档"远程访问"一节）。
+      # 如果暂时不用 Tailscale 免密，可改为 "8971:8971" 在局域网访问。
+      - "127.0.0.1:8971:8971"
+    volumes:
+      - ./frigate:/config                 # 配置与数据库：留在本地磁盘
+      - nas_recordings:/media/frigate     # 录像：写到 NAS
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000
+    environment:
+      - TZ=${TZ}
+      - FRIGATE_RTSP_USER=${FRIGATE_RTSP_USER}
+      - FRIGATE_RTSP_PASSWORD=${FRIGATE_RTSP_PASSWORD}
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    # 不映射端口：只给本 compose 内的容器使用
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  notifier:   # 报警推送 + AI 复核 + 声音报警
+    image: python:3.12-slim
+    container_name: notifier
+    restart: unless-stopped
+    depends_on: [frigate, mosquitto]
+    working_dir: /app
+    command: sh -c "pip install -q -r requirements.txt && python notify.py"
+    volumes:
+      - ./notifier:/app
+    environment:
+      - TZ=${TZ}
+      - PUSHOVER_TOKEN=${PUSHOVER_TOKEN}
+      - PUSHOVER_USER=${PUSHOVER_USER}
+      - PUBLIC_URL=${PUBLIC_URL}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - CLAUDE_MODEL=${CLAUDE_MODEL}
+
+  health:     # 健康监控 + 每日日报
+    image: python:3.12-slim
+    container_name: health
+    restart: unless-stopped
+    depends_on: [frigate]
+    working_dir: /app
+    command: sh -c "pip install -q requests && python health.py"
+    volumes:
+      - ./notifier:/app
+    environment:
+      - TZ=${TZ}
+      - PUSHOVER_TOKEN=${PUSHOVER_TOKEN}
+      - PUSHOVER_USER=${PUSHOVER_USER}
+
+  backup:     # 报警片段加密异地备份（rclone crypt）
+    image: python:3.12-slim
+    container_name: backup
+    restart: unless-stopped
+    depends_on: [frigate]
+    working_dir: /app
+    command: sh -c "pip install -q requests && python backup.py"
+    volumes:
+      - ./notifier:/app
+      - /usr/bin/rclone:/usr/bin/rclone:ro        # 复用宿主机安装的 rclone
+      - ${HOME}/.config/rclone:/config/rclone     # 需可写：rclone 会自动刷新令牌
+    environment:
+      - TZ=${TZ}
+      - RCLONE_CONFIG=/config/rclone/rclone.conf
+      - BACKUP_REMOTE=onedrive-crypt:
+      - BACKUP_QUOTA_GB=5
+
+volumes:
+  nas_recordings:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//${NAS_IP}/frigate"
+      o: "username=${NAS_USER},password=${NAS_PASS},vers=3.0,uid=0,gid=0,file_mode=0770,dir_mode=0770"

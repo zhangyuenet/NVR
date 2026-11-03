@@ -1,0 +1,14 @@
+{
+  "_说明": "复制为 household.json 后填写。household.json 含车牌等隐私信息，已在 .gitignore 中排除，不要提交。",
+  "cars": {
+    "ABCD123": {"owner": "我的车", "desc": "白色 Toyota RAV4"},
+    "WXYZ789": {"owner": "家人的车", "desc": "黑色 Honda CR-V"}
+  },
+  "cameras": {
+    "driveway": "车道（俯拍广角，画面中有车道、草坪，远处是人行道和马路）",
+    "frontdoor": "前门门廊（俯拍广角）",
+    "sidedoor": "侧门通道（俯拍广角）",
+    "backyard": "后院",
+    "livingroom": "室内客厅"
+  }
+}

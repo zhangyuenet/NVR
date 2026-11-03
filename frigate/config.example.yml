@@ -1,0 +1,193 @@
+# Frigate 配置模板（Frigate 0.18）。复制为 frigate/config.yml 使用。
+# 区域（zones）和遮罩（masks）的坐标请在 Frigate 网页的 Masks/Zones 里画，不要照抄。
+
+mqtt:
+  enabled: true
+  host: mosquitto
+  port: 1883
+
+profiles:            # 在家 / 离家，可在网页或 MQTT（frigate/profile/set）切换
+  home:
+    friendly_name: 在家
+  away:
+    friendly_name: 离家
+
+snapshots:
+  enabled: true
+  bounding_box: true
+  timestamp: false
+  retain:
+    default: 30
+
+audio:               # 声音识别：只识别事件，不保存说话声
+  enabled: true
+  listen:
+    - smoke_detector
+    - fire_alarm
+    - glass
+    - shatter
+    - scream
+    - car_alarm
+    - siren
+    - yell
+    - bark
+
+record:
+  enabled: true
+  continuous:
+    days: 14
+  motion:
+    days: 14
+  alerts:
+    retain:
+      days: 30
+  detections:
+    retain:
+      days: 30
+
+detect:
+  enabled: true
+  width: 1280
+  height: 720
+
+# 识别器：Intel CPU 用 OpenVINO，比默认 CPU 识别器快、省 CPU
+detectors:
+  ov:
+    type: openvino
+    device: CPU      # 有可用的 Intel 核显时改为 GPU
+
+# 模型：YOLOv9-t 320（需要先导出，见文档"识别模型"一节）
+model:
+  model_type: yolo-generic
+  width: 320
+  height: 320
+  input_tensor: nchw
+  input_dtype: float
+  path: /config/model_cache/yolov9-t-320.onnx
+  labelmap_path: /labelmap/coco-80.txt
+# 回退到内置模型（不需要导出）：
+# model:
+#   width: 300
+#   height: 300
+#   input_tensor: nhwc
+#   input_pixel_format: bgr
+#   path: /openvino-model/ssdlite_mobilenet_v2.xml
+#   labelmap_path: /openvino-model/coco_91cl_bkgr.txt
+
+# 远程访问免密（可选）：由 Tailscale Serve 传入身份，Frigate 关闭自带登录。
+# 前提：8971 端口只监听 127.0.0.1（见 docker-compose.example.yml）。
+# auth:
+#   enabled: false
+# proxy:
+#   header_map:
+#     user: tailscale-user-login
+#     role: tailscale-user-login
+#   role_map:
+#     admin:
+#       - admin@example.com
+#   default_role: viewer
+
+cameras:
+  driveway:
+    ffmpeg:
+      output_args:
+        record: preset-record-generic-audio-aac
+      inputs:
+        # Wyze V3 官方 RTSP：弱信号下用不加密的 RTSP（554），RTSPS（322）容易断线
+        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@192.168.1.21:554/stream0
+          input_args: preset-rtsp-generic
+          roles: [detect, record, audio]
+    objects:
+      track: [person, car, bicycle]
+    zones:
+      driveway_zone:
+        coordinates: 0.1,0.4,0.9,0.4,0.9,0.95,0.1,0.95   # 占位，请在网页里重画
+        inertia: 5            # 连续 5 帧在区域内才算进入
+        loitering_time: 5     # 停留 5 秒才触发（过滤匆匆走过的路人）
+        objects: [person, car, bicycle]
+    review:
+      alerts:
+        required_zones: [driveway_zone]
+      detections:
+        required_zones: []
+
+  frontdoor:
+    ffmpeg:
+      output_args:
+        record: preset-record-generic-audio-aac
+      inputs:
+        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@192.168.1.22:554/stream0
+          input_args: preset-rtsp-generic
+          roles: [detect, record, audio]
+    objects:
+      track: [person, car, bicycle]
+    zones:
+      front_door_zone:
+        coordinates: 0.05,0.05,0.95,0.05,0.95,0.95,0.05,0.95   # 占位
+        inertia: 3
+        loitering_time: 3
+    review:
+      alerts:
+        required_zones: [front_door_zone]
+      detections:
+        required_zones: []
+
+  sidedoor:
+    ffmpeg:
+      output_args:
+        record: preset-record-generic-audio-aac
+      inputs:
+        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@192.168.1.23:554/stream0
+          input_args: preset-rtsp-generic
+          roles: [detect, record, audio]
+    objects:
+      track: [person]
+    zones:
+      side_path_zone:         # 只画人能站的地面，不包括门板、墙面
+        coordinates: 0.05,0.5,0.6,0.5,0.6,0.98,0.05,0.98   # 占位
+    review:
+      alerts:
+        required_zones: [side_path_zone]
+      detections:
+        required_zones: []
+
+  backyard:                   # 人 + 中大型动物（浣熊常被识别为 cat/dog/bear）
+    ffmpeg:
+      output_args:
+        record: preset-record-generic-audio-aac
+      inputs:
+        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@192.168.1.24:554/stream0
+          input_args: preset-rtsp-generic
+          roles: [detect, record, audio]
+    objects:
+      track: [person, cat, dog, bear]
+      filters:                # 小于画面 0.5% 的动物框忽略（过滤松鼠），按实际数据调整
+        cat: {min_area: 0.005}
+        dog: {min_area: 0.005}
+        bear: {min_area: 0.005}
+    review:
+      alerts:
+        labels: [person, cat, dog, bear]
+
+  livingroom:                 # 室内：在家时关闭识别，离家时开启
+    ffmpeg:
+      output_args:
+        record: preset-record-generic-audio-aac
+      inputs:
+        - path: rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@192.168.1.25:554/stream0
+          input_args: preset-rtsp-generic
+          roles: [detect, record, audio]
+    objects:
+      track: [person]
+    review:
+      alerts:
+        labels: [person]
+    profiles:
+      home:
+        detect: {enabled: false}
+        motion: {enabled: false}
+      away:
+        detect: {enabled: true}
+        motion: {enabled: true}
+
+version: 0.18-0
